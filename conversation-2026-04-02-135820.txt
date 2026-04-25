@@ -1,0 +1,357 @@
+╭─── Claude Code v2.1.90 ──────────────────────────────────────────────────────╮
+│                                                    │ Tips for getting        │
+│           Welcome back Veronicatp Langbf!          │ started                 │
+│                                                    │ Run /init to create a … │
+│                       ▐▛███▜▌                      │ ─────────────────────── │
+│                      ▝▜█████▛▘                     │ Recent activity         │
+│                        ▘▘ ▝▝                       │ No recent activity      │
+│  Sonnet 4.6 · Claude Pro ·                         │                         │
+│  rkelvinbernieZZ62@brew-master.com's Organization  │                         │
+│              /opt/workspace/myclaude               │                         │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+  ✻ Voice mode is now available · /voice to enable
+
+❯ 我想仔细学习一下这个源码，应该如何入手                                        
+
+● 让我先看看这个项目的结构。
+
+  Searched for 2 patterns, read 2 files, listed 4 directories (ctrl+o to expand)
+
+● 这是 Claude Code CLI 本身的源码，TypeScript + React/Ink 写的终端应用，共约
+  1884 个源文件。下面是推荐的入手路径：
+
+  ---
+  整体架构分层
+
+  entrypoints/cli.tsx          ← 程序入口
+        ↓
+  src/QueryEngine.ts           ← 核心对话循环（最重要的文件）
+        ↓
+  src/Tool.ts                  ← Tool 基类/接口定义
+  src/tools/*/                 ← 各工具实现（Bash/FileEdit/Agent 等）
+        ↓
+  src/components/  +  src/ink/ ← 终端 UI（React + Ink）
+  src/state/                   ← 应用状态管理
+  src/services/                ← 各类服务（API/OAuth/MCP）
+
+  ---
+  推荐阅读顺序
+
+  第一步：理解数据结构（30 分钟）
+  - src/Task.ts — Task 类型和状态机（短小精悍，125 行）
+  - src/Tool.ts — Tool 抽象基类（792 行，定义了工具的结构）
+
+  第二步：理解核心循环（重点）
+  - src/QueryEngine.ts — 1295 行，管理整个 agent 对话循环，读懂它就懂了 AI
+  如何执行任务
+
+  第三步：看一个具体工具的实现
+  - src/tools/BashTool/ — 最典型的工具
+  - src/tools/FileEditTool/ — 文件编辑工具
+  - src/tools/AgentTool/ — 子 agent 派生
+
+  第四步：了解 UI 层
+  - src/entrypoints/cli.tsx — CLI 主入口，了解启动流程
+  - src/ink/ — 终端渲染层（基于 Ink/React）
+
+  第五步：服务层
+  - src/bridge/ — 远程/移动端通信桥接
+  - src/services/mcp/ — MCP 协议集成
+  - src/services/api/ — Anthropic API 调用层
+
+  ---
+  快速定位关键概念
+
+  ┌──────────────────┬───────────────────────────────────────────────────────┐
+  │    想了解什么    │                        看哪里                         │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ 工具如何被调用   │ src/Tool.ts + src/QueryEngine.ts                      │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ 斜杠命令如何工作 │ src/commands/help/ 等任意命令目录                     │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ 权限审批流程     │ src/components/permissions/                           │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ MCP 集成         │ src/services/mcp/ + src/tools/MCPTool/                │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ 对话历史/压缩    │ src/services/compact/ +                               │
+  │                  │ src/assistant/sessionHistory.ts                       │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ 设置系统         │ src/utils/settings/                                   │
+  ├──────────────────┼───────────────────────────────────────────────────────┤
+  │ 状态管理         │ src/state/ + src/bootstrap/state.ts                   │
+  └──────────────────┴───────────────────────────────────────────────────────┘
+
+  建议先从 src/Task.ts → src/Tool.ts → src/QueryEngine.ts
+  这条主线读起，理解了这三个文件，整个架构就清晰了。你对哪个模块最感兴趣？
+
+✻ Baked for 48s
+
+❯ queryengine                                                                   
+
+  Read 1 file (ctrl+o to expand)
+
+● 现在我已经完整读完了整个文件，给你一个系统性的解析：
+
+  ---
+  QueryEngine.ts 全面解析
+
+  文件结构概览
+
+  QueryEngineConfig (type)     ← 配置对象类型定义 L130-173
+  QueryEngine (class)          ← 主类 L184-1177
+    constructor()              L200
+    submitMessage()            L209-1156  ← 核心方法（AsyncGenerator）
+    interrupt()                L1158
+    getMessages()              L1162
+    ...
+  ask() (function)             L1186-1295 ← 对 QueryEngine 的便捷封装
+
+  ---
+  核心：submitMessage() 的执行流程
+
+  submitMessage(prompt)
+  │
+  ├─① 包装 canUseTool → 追踪权限拒绝记录
+  │
+  ├─② 构建 System Prompt
+  │     fetchSystemPromptParts() → defaultSystemPrompt + userContext
+  │     + memoryMechanicsPrompt（如果有 MEMORY_PATH_OVERRIDE）
+  │     + appendSystemPrompt
+  │
+  ├─③ 处理用户输入（斜杠命令等）
+  │     processUserInput() → { messages, shouldQuery, allowedTools, model }
+  │     push 到 mutableMessages
+  │
+  ├─④ 持久化 transcript（用户消息先写盘，防止被杀后无法 --resume）
+  │
+  ├─⑤ yield buildSystemInitMessage()  ← 第一个 yield，SDK 系统初始化消息
+  │
+  ├─⑥ 如果 !shouldQuery（斜杠命令本地执行）→ yield 本地结果 → return
+  │
+  └─⑦ 进入主循环：for await (message of query(...))
+        │
+        ├─ 'assistant'   → push + yield（含流式文本）
+        ├─ 'user'        → push + yield（工具调用结果）
+        ├─ 'progress'    → push + yield（工具执行进度）
+        ├─ 'stream_event'→ 累计 token 用量（message_start/delta/stop）
+        ├─ 'attachment'  → 处理 max_turns、structured_output 等特殊信号
+        ├─ 'system'      → 处理 compact_boundary / api_error / snip
+        └─ 'tool_use_summary' → yield 给 SDK
+        │
+        ├─ 每轮检查 maxBudgetUsd 是否超出 → 超出则 yield error_max_budget_usd
+        └─ 检查 structured output 重试次数
+
+        循环结束 → yield result (success / error_during_execution)
+
+  ---
+  关键设计点
+
+  1. 它是一个 AsyncGenerator
+  submitMessage() 用 yield* 流式输出消息，调用方通过 for await 消费：
+  - 实时拿到 AI 的流式文本
+  - 实时拿到工具调用进度
+  - 最后收到 type: 'result' 作为终止信号
+
+  2. mutableMessages vs 局部 messages
+  mutableMessages  ← 跨多轮 turn 持久保存的消息历史（QueryEngine 生命周期内）
+  messages         ← submitMessage 内的局部副本，传给 query()
+  两者在循环中同步 push，但 messages 还会在 compact_boundary 时被 splice
+  截断以释放内存。
+
+  3. 两层消息处理
+  - processUserInput() — 处理斜杠命令，返回 shouldQuery 决定是否调用 API
+  - query() — 真正向 Anthropic API 发请求并执行工具调用（在 src/query.js）
+
+  4. ask() 函数
+  第 1186 行，是对 QueryEngine 的一次性封装：创建 engine → submitMessage → 更新
+  readFileCache。外部大多数地方调用这个，而不是直接 new QueryEngine()。
+
+  5. 终止条件（result 的几种 subtype）
+
+  ┌─────────────────────────────────────┬────────────────────┐
+  │               subtype               │        含义        │
+  ├─────────────────────────────────────┼────────────────────┤
+  │ success                             │ 正常完成           │
+  ├─────────────────────────────────────┼────────────────────┤
+  │ error_max_turns                     │ 超过最大 turn 数   │
+  ├─────────────────────────────────────┼────────────────────┤
+  │ error_max_budget_usd                │ 超出 USD 预算      │
+  ├─────────────────────────────────────┼────────────────────┤
+  │ error_max_structured_output_retries │ 结构化输出重试过多 │
+  ├─────────────────────────────────────┼────────────────────┤
+  │ error_during_execution              │ 其他执行错误       │
+  └─────────────────────────────────────┴────────────────────┘
+
+  ---
+  下一步建议
+
+  读完 QueryEngine.ts 后，自然要问：query() 内部是怎么工作的？
+
+  src/query.ts   ← 实际与 Anthropic API 交互、执行工具调用的循环
+
+  这是 QueryEngine 依赖的核心底层，建议接下来读它。
+
+✻ Worked for 54s
+
+❯ 能给我画个流程架构图么                                                        
+
+  Read 1 file (ctrl+o to expand)
+
+● 现在我有了完整的源码信息，来画整体流程架构图。
+
+  ---
+  整体调用链（宏观视图）
+
+  用户输入
+     │
+     ▼
+  ┌─────────────────────────────────────────────────────────────┐
+  │  QueryEngine.submitMessage()   [QueryEngine.ts]             │
+  │                                                             │
+  │  1. 包装 canUseTool（追踪权限拒绝）                            │
+  │  2. fetchSystemPromptParts()  → 组装 System Prompt          │
+  │  3. processUserInput()        → 处理斜杠命令                  │
+  │  4. recordTranscript()        → 先写盘，防止 kill 后无法 resume │
+  │  5. yield buildSystemInitMessage()  ← SDK 系统初始化消息      │
+  │  6. shouldQuery? ─No──→ yield 本地命令结果 → return           │
+  │            │Yes                                             │
+  │            ▼                                                │
+  │  ┌──────────────────────────────────────────────────────┐   │
+  │  │  for await (message of query(...))   [query.ts]      │   │
+  │  │  switch(message.type)                                │   │
+  │  │    assistant → push + yield                          │   │
+  │  │    user      → push + yield                          │   │
+  │  │    progress  → push + yield                          │   │
+  │  │    stream_event → 累计 usage                          │   │
+  │  │    attachment → 处理 max_turns / structured_output    │   │
+  │  │    system    → compact_boundary / api_error          │   │
+  │  │  检查 maxBudgetUsd / structured_output 重试次数         │   │
+  │  └──────────────────────────────────────────────────────┘   │
+  │                                                             │
+  │  yield result { subtype: success | error_* }               │
+  └─────────────────────────────────────────────────────────────┘
+
+  ---
+  query() / queryLoop() 内部循环（核心）
+
+  query(params)
+     │
+     └─► queryLoop()  ← while(true) 循环
+              │
+              ├─[每轮开始]──────────────────────────────────────────────┐
+              │                                                        │
+              │  1. getMessagesAfterCompactBoundary()                  │
+              │     applyToolResultBudget()   ← 裁剪过大的工具结果       │
+              │                                                        │
+              │  2. snip → microcompact → contextCollapse              │
+              │     ↓                                                  │
+              │  3. autocompact（如果 token 超阈值）                     │
+              │     ↓ 触发 → buildPostCompactMessages() → yield        │
+              │                                                        │
+              │  4. 检查 blocking_limit（prompt 太长直接返回错误）         │
+              │                                                        │
+              │  5. callModel() ─── 调用 Anthropic API（流式）          │
+              │     └─ for await message:                              │
+              │         assistant → push assistantMessages             │
+              │                     收集 toolUseBlocks                 │
+              │         stream_event → 累计 token                      │
+              │         [withheld] prompt-too-long / max_output_tokens │
+              │                                                        │
+              │  6. needsFollowUp?                                     │
+              │     ├─No──────────────────────────────────────────────┤
+              │     │   isWithheld413 → collapse drain → continue     │
+              │     │               → reactiveCompact → continue      │
+              │     │               → 恢复失败 → yield 错误 → return   │
+              │     │   isWithheldMaxOutputTokens                      │
+              │     │       → 升级 64k token 重试 → continue           │
+              │     │       → 注入 "Resume" meta 消息 → continue       │
+              │     │       → 重试耗尽 → yield 错误                     │
+              │     │   stopHooks → blockingErrors? → continue        │
+              │     │   tokenBudget → 继续? → continue                 │
+              │     │   return { reason: 'completed' }  ◄──────────── │
+              │     │                                                  │
+              │     └─Yes─────────────────────────────────────────────┤
+              │         runTools(toolUseBlocks)                        │
+              │         └─ for await update:                           │
+              │             yield progress/result 消息                 │
+              │             收集 toolResults                           │
+              │                                                        │
+              │         aborted? → yield interruption → return        │
+              │                                                        │
+              │         getAttachmentMessages()  ← 队列命令/内存/skill   │
+              │         maxTurns? → yield max_turns → return          │
+              │                                                        │
+              │         state = { messages + assistantMessages        │
+              │                          + toolResults, turnCount+1 } │
+              └─────────────────────────────────────────────────────── ┘
+                                继续下一轮
+
+  ---
+  消息类型流向
+
+  Anthropic API 流式输出
+          │
+          ▼
+    callModel() 流式迭代
+          │
+     ┌────┴────────────────────────────────────────┐
+     │                                             │
+  stream_event         assistant                 (error)
+  (token 统计)    ┌────┴──────────────────┐      withheld
+                 │                       │      暂存
+             无工具调用              有 tool_use
+                 │                       │
+                 ▼                       ▼
+            needsFollowUp=false   needsFollowUp=true
+                 │                       │
+             stopHooks            runTools() 执行
+             检查完成?
+                 │
+            ─────┴──────
+           │            │
+         return     continue
+       completed    (inject recovery msg)
+
+  ---
+  状态转移表（state.transition.reason）
+
+  ┌──────────────────────────┬────────────────────────┬────────────────────┐
+  │        transition        │        触发条件        │        效果        │
+  ├──────────────────────────┼────────────────────────┼────────────────────┤
+  │ next_turn                │ 工具调用完成，有       │ 正常下一轮         │
+  │                          │ toolResults            │                    │
+  ├──────────────────────────┼────────────────────────┼────────────────────┤
+  │ max_output_tokens_escala │ 输出被截断，未设过     │ 升级到 64k token   │
+  │ te                       │ override               │ 重试               │
+  ├──────────────────────────┼────────────────────────┼────────────────────┤
+  │ max_output_tokens_recove │ 截断，已升级，未超上限 │ 注入"Resume"消息继 │
+  │ ry                       │  3 次                  │ 续                 │
+  ├──────────────────────────┼────────────────────────┼────────────────────┤
+  │ reactive_compact_retry   │ prompt-too-long，compa │ 用压缩后历史重试   │
+  │                          │ ct 成功                │                    │
+  ├──────────────────────────┼────────────────────────┼────────────────────┤
+  │ collapse_drain_retry     │ prompt-too-long，conte │ 折叠旧上下文重试   │
+  │                          │ xt collapse drain      │                    │
+  ├──────────────────────────┼────────────────────────┼────────────────────┤
+  │ stop_hook_blocking       │ stop hook 返回         │ 注入 hook 错误重试 │
+  │                          │ blockingErrors         │                    │
+  ├──────────────────────────┼────────────────────────┼────────────────────┤
+  │ token_budget_continuatio │ token                  │ 注入 nudge         │
+  │ n                        │ 用量超阈值但未完成     │ 消息继续           │
+  └──────────────────────────┴────────────────────────┴────────────────────┘
+
+  ---
+  两个文件的职责边界
+
+  QueryEngine.ts                          query.ts
+  ─────────────────                       ────────────────────
+  • 一次对话的生命周期                       • 一次 turn 的 API 交互
+  • 跨 turn 维护 mutableMessages           • while(true) 工具执行循环
+  • 处理斜杠命令 (processUserInput)         • 上下文压缩策略
+  • 写 transcript / 恢复会话                • 错误恢复（PTL/max_tokens）
+  • USD 预算检查                           • Stop Hooks
+  • 对外暴露 SDK 消息格式                   • 工具并发执行
+  • ask() = 一次性封装                      • 队列命令/内存附件注入
+
+✻ Sautéed for 1m 28s
